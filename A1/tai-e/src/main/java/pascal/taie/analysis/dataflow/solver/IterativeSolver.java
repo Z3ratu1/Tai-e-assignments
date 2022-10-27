@@ -26,6 +26,7 @@ import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
 
+import java.util.Set;
 class IterativeSolver<Node, Fact> extends Solver<Node, Fact> {
 
     public IterativeSolver(DataflowAnalysis<Node, Fact> analysis) {
@@ -39,6 +40,21 @@ class IterativeSolver<Node, Fact> extends Solver<Node, Fact> {
 
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        boolean modified;
+        do {
+            modified = false;
+            // indeed this is no need to consider to start at exit, it just makes us to iter more times
+            for (Node node : cfg.getNodes()) {
+                Set<Node> succs = cfg.getSuccsOf(node);
+                Fact out = result.getOutFact(node);
+                Fact in = result.getInFact(node);
+                for (Node succ : succs) {
+                    analysis.meetInto(result.getInFact(succ), out);
+                }
+                if (analysis.transferNode(node, in, out)) {
+                    modified = true;
+                }
+            }
+        } while (modified);
     }
 }
