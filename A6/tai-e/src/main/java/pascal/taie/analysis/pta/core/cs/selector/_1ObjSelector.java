@@ -43,18 +43,21 @@ public class _1ObjSelector implements ContextSelector {
     @Override
     public Context selectContext(CSCallSite callSite, JMethod callee) {
         // TODO - finish me
-        return null;
+        // 静态方法对obj类型来说本当是空上下文，但有可能这个static方法是在存在上下文的情况下调用的
+        // 所以返回上一级上下文
+        return callSite.getContext();
     }
 
     @Override
     public Context selectContext(CSCallSite callSite, CSObj recv, JMethod callee) {
         // TODO - finish me
-        return null;
+        // 这里的obj应该拿一个裸obj还是一个csobj呢？题目描述上有，obj
+        return ListContext.make(recv.getObject());
     }
 
     @Override
     public Context selectHeapContext(CSMethod method, Obj obj) {
         // TODO - finish me
-        return null;
+        return getEmptyContext();
     }
 }

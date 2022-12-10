@@ -29,6 +29,7 @@ import pascal.taie.analysis.pta.core.cs.element.CSMethod;
 import pascal.taie.analysis.pta.core.cs.element.CSObj;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.language.classes.JMethod;
+import pascal.taie.util.AnalysisException;
 
 /**
  * Implementation of 2-object sensitivity.
@@ -43,18 +44,34 @@ public class _2ObjSelector implements ContextSelector {
     @Override
     public Context selectContext(CSCallSite callSite, JMethod callee) {
         // TODO - finish me
-        return null;
+        // 考虑在已有上下文的情况下调用静态方法
+        return callSite.getContext();
     }
 
     @Override
     public Context selectContext(CSCallSite callSite, CSObj recv, JMethod callee) {
         // TODO - finish me
-        return null;
+        // 和二层callsite的差不多，不过换一个输入为obj，同时需要注意context从recv obj中拿
+        Context callerContext = recv.getContext();
+        Obj obj = recv.getObject();
+        return switch (callerContext.getLength()) {
+            case 0 -> ListContext.make(obj);
+            case 1 -> ListContext.make(callerContext.getElementAt(0), obj);
+            case 2 -> ListContext.make(callerContext.getElementAt(1), obj);
+            default -> throw new AnalysisException("invalid context lenght");
+        };
     }
 
     @Override
     public Context selectHeapContext(CSMethod method, Obj obj) {
         // TODO - finish me
-        return null;
+        // 不用创建新的上下文，所以和call的是一样的，复制粘贴
+        Context calleeContext = method.getContext();
+        return switch (calleeContext.getLength()) {
+            case 0 -> calleeContext;
+            case 1 -> ListContext.make(calleeContext.getElementAt(0));
+            case 2 -> ListContext.make(calleeContext.getElementAt(1));
+            default -> throw new AnalysisException("invalid context lenght");
+        };
     }
 }

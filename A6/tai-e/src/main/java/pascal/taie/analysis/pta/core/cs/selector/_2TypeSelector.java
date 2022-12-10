@@ -30,6 +30,7 @@ import pascal.taie.analysis.pta.core.cs.element.CSObj;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
+import pascal.taie.util.AnalysisException;
 
 /**
  * Implementation of 2-type sensitivity.
@@ -44,18 +45,32 @@ public class _2TypeSelector implements ContextSelector {
     @Override
     public Context selectContext(CSCallSite callSite, JMethod callee) {
         // TODO - finish me
-        return null;
+        return callSite.getContext();
     }
 
     @Override
     public Context selectContext(CSCallSite callSite, CSObj recv, JMethod callee) {
         // TODO - finish me
-        return null;
+        Context callerContext = recv.getContext();
+        // 上课的时候没认真听这段。。。type是用recvObj声明时所在的类作为type，而不是recvObj本身的type，怪
+        Type type = recv.getObject().getContainerType();
+        return switch (callerContext.getLength()) {
+            case 0 -> ListContext.make(type);
+            case 1 -> ListContext.make(callerContext.getElementAt(0), type);
+            case 2 -> ListContext.make(callerContext.getElementAt(1), type);
+            default -> throw new AnalysisException("invalid context lenght");
+        };
     }
 
     @Override
     public Context selectHeapContext(CSMethod method, Obj obj) {
         // TODO - finish me
-        return null;
+        Context calleeContext = method.getContext();
+        return switch (calleeContext.getLength()) {
+            case 0 -> calleeContext;
+            case 1 -> ListContext.make(calleeContext.getElementAt(0));
+            case 2 -> ListContext.make(calleeContext.getElementAt(1));
+            default -> throw new AnalysisException("invalid context lenght");
+        };
     }
 }

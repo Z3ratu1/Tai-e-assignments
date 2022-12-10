@@ -30,6 +30,7 @@ import pascal.taie.analysis.pta.core.cs.element.CSObj;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.language.classes.JMethod;
+import pascal.taie.util.AnalysisException;
 
 /**
  * Implementation of 2-call-site sensitivity.
@@ -44,18 +45,37 @@ public class _2CallSelector implements ContextSelector {
     @Override
     public Context selectContext(CSCallSite callSite, JMethod callee) {
         // TODO - finish me
-        return null;
+        // call site本身就不考虑recv obj,照抄
+        return selectContext(callSite, null, callee);
     }
 
     @Override
     public Context selectContext(CSCallSite callSite, CSObj recv, JMethod callee) {
         // TODO - finish me
-        return null;
+        // 这里输入的应该是之前调用的上下文，需要把第一个上下文pop出去然后append一个这个callsite上去
+        // 也不对，还得判断一下长度，没到两层就直接append上去就可以了，get方法如果超过下标会throw error
+        Invoke invoke = callSite.getCallSite();
+        Context callerContext = callSite.getContext();
+        // IDEA的超级优化语法，真高级啊
+        return switch (callerContext.getLength()) {
+            case 0 -> ListContext.make(invoke);
+            case 1 -> ListContext.make(callerContext.getElementAt(0), invoke);
+            case 2 -> ListContext.make(callerContext.getElementAt(1), invoke);
+            default -> throw new AnalysisException("invalid context lenght");
+        };
     }
 
     @Override
     public Context selectHeapContext(CSMethod method, Obj obj) {
         // TODO - finish me
-        return null;
+        // 一层的堆上下文，这里的method直接是callee context，和上面两个方法不一样
+        // 因为上面两个方法本身是一层调用，需要添加被调函数上下文，这里是在被调函数中使用new，把被调函数的这一层context拿出来就行
+        Context calleeContext = method.getContext();
+        return switch (calleeContext.getLength()) {
+            case 0 -> calleeContext;
+            case 1 -> ListContext.make(calleeContext.getElementAt(0));
+            case 2 -> ListContext.make(calleeContext.getElementAt(1));
+            default -> throw new AnalysisException("invalid context lenght");
+        };
     }
 }
