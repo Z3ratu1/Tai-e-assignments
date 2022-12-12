@@ -48,8 +48,7 @@ import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.pts.PointsToSet;
 import pascal.taie.analysis.pta.pts.PointsToSetFactory;
 import pascal.taie.config.AnalysisOptions;
-import pascal.taie.ir.exp.InvokeExp;
-import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.Copy;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.ir.stmt.LoadArray;
@@ -61,6 +60,7 @@ import pascal.taie.ir.stmt.StoreField;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
+import pascal.taie.util.AnalysisException;
 
 class Solver {
 
@@ -112,6 +112,9 @@ class Solver {
      */
     private void addReachable(CSMethod csMethod) {
         // TODO - finish me
+        if (callGraph.addReachableMethod(csMethod)) {
+            csMethod.getMethod().getIR().getStmts().forEach(stmt -> stmt.accept(new StmtProcessor(csMethod)));
+        }
     }
 
     /**
@@ -130,6 +133,84 @@ class Solver {
 
         // TODO - if you choose to implement addReachable()
         //  via visitor pattern, then finish me
+        // 这里加了个context，处理时也要考虑context了
+        @Override
+        public Void visit(New stmt) {
+            Var var = stmt.getLValue();
+            // 对于new语句来说，还需要考虑堆抽象，上课的时候讲过，然后我一开始写这里的时候全忘了...
+            // 但是这里提到的是对于k层context selector，堆抽象的层数是k-1，和课上的例子并不一致
+            Obj obj = heapModel.getObj(stmt);
+            Context heapContext = contextSelector.selectHeapContext(csMethod, obj);
+            // 之前从pfg中获取的节点现在需要从csManager中获取
+            CSObj csObj = csManager.getCSObj(heapContext, obj);
+            CSVar csVar = csManager.getCSVar(context, var);
+            // 这里应该创建一个新的PTS，而不是修改csVar的PTS
+            PointsToSet pointsToSet = PointsToSetFactory.make(csObj);
+            workList.addEntry(csVar, pointsToSet);
+            return null;
+        }
+
+        @Override
+        public Void visit(Copy stmt) {
+            CSVar target = csManager.getCSVar(context, stmt.getLValue());
+            CSVar source = csManager.getCSVar(context, stmt.getRValue());
+            addPFGEdge(source, target);
+            return null;
+        }
+
+        // 静态变量有一点全局的感觉，所以是不考虑context的
+        @Override
+        public Void visit(StoreField stmt) {
+            // T.f = y
+            if (stmt.isStatic()) {
+                CSVar source = csManager.getCSVar(context, stmt.getRValue());
+                StaticField target = csManager.getStaticField(stmt.getFieldAccess().getFieldRef().resolve());
+                addPFGEdge(source, target);
+            }
+            return null;
+        }
+
+        @Override
+        public Void visit(LoadField stmt) {
+            // y = T.f
+            if (stmt.isStatic()) {
+                CSVar target = csManager.getCSVar(context, stmt.getLValue());
+                StaticField source = csManager.getStaticField(stmt.getFieldAccess().getFieldRef().resolve());
+                addPFGEdge(source, target);
+            }
+            return null;
+        }
+
+        @Override
+        public Void visit(Invoke stmt) {
+            if (stmt.isStatic()) {
+                JMethod method = resolveCallee(null, stmt);
+                // this.context就是caller context
+                CSCallSite csCallSite = csManager.getCSCallSite(context, stmt);
+                Context calleeContext = contextSelector.selectContext(csCallSite, method);
+                CSMethod csMethod = csManager.getCSMethod(calleeContext, method);
+                if (callGraph.addEdge(new Edge<>(CallKind.STATIC, csCallSite, csMethod))) {
+                    addReachable(csMethod);
+                    for (int i = 0; i < stmt.getInvokeExp().getArgCount(); i++) {
+                        Var arg = stmt.getInvokeExp().getArg(i);
+                        Var param = method.getIR().getParam(i);
+                        CSVar csArg = csManager.getCSVar(context, arg);
+                        CSVar csParam = csManager.getCSVar(calleeContext, param);
+                        addPFGEdge(csArg, csParam);
+                    }
+                    Var retVar = stmt.getResult();
+                    if (retVar != null) {
+                        CSVar target = csManager.getCSVar(context, retVar);
+                        method.getIR().getReturnVars().forEach(var -> {
+                            CSVar source = csManager.getCSVar(calleeContext, var);
+                            addPFGEdge(source, target);
+                        });
+                    }
+                }
+
+            }
+            return null;
+        }
     }
 
     /**
@@ -137,6 +218,11 @@ class Solver {
      */
     private void addPFGEdge(Pointer source, Pointer target) {
         // TODO - finish me
+        if (pointerFlowGraph.addEdge(source, target)) {
+            if (!source.getPointsToSet().isEmpty()) {
+                workList.addEntry(target, source.getPointsToSet());
+            }
+        }
     }
 
     /**
@@ -144,6 +230,44 @@ class Solver {
      */
     private void analyze() {
         // TODO - finish me
+        // init的时候已经对entry进行了一次addReachable，所以这里直接开始处理
+        while (!workList.isEmpty()) {
+            WorkList.Entry entry = workList.pollEntry();
+            Pointer pointer = entry.pointer();
+            PointsToSet pointsToSet = entry.pointsToSet();
+            PointsToSet diffObjs = propagate(pointer, pointsToSet);
+            if (pointer instanceof CSVar) {
+                Context context = ((CSVar) pointer).getContext();
+                for (CSObj obj : diffObjs) {
+                    Var var = ((CSVar) pointer).getVar();
+                    // x.f = y
+                    var.getStoreFields().forEach(storeField -> {
+                        CSVar source = csManager.getCSVar(context, storeField.getRValue());
+                        InstanceField target = csManager.getInstanceField(obj, storeField.getFieldAccess().getFieldRef().resolve());
+                        addPFGEdge(source, target);
+                    });
+                    // y = x.f
+                    var.getLoadFields().forEach(loadField -> {
+                        CSVar target = csManager.getCSVar(context, loadField.getLValue());
+                        InstanceField source = csManager.getInstanceField(obj, loadField.getFieldAccess().getFieldRef().resolve());
+                        addPFGEdge(source, target);
+                    });
+                    // x[i] = y
+                    var.getStoreArrays().forEach(storeArray -> {
+                        ArrayIndex target = csManager.getArrayIndex(obj);
+                        CSVar source = csManager.getCSVar(context, storeArray.getRValue());
+                        addPFGEdge(source, target);
+                    });
+                    // y = x[i]
+                    var.getLoadArrays().forEach(loadArray -> {
+                        CSVar target = csManager.getCSVar(context, loadArray.getLValue());
+                        ArrayIndex source = csManager.getArrayIndex(obj);
+                        addPFGEdge(source, target);
+                    });
+                    processCall((CSVar) pointer, obj);
+                }
+            }
+        }
     }
 
     /**
@@ -152,7 +276,17 @@ class Solver {
      */
     private PointsToSet propagate(Pointer pointer, PointsToSet pointsToSet) {
         // TODO - finish me
-        return null;
+        PointsToSet diffObjs = PointsToSetFactory.make();
+        PointsToSet originObjs = pointer.getPointsToSet();
+        pointsToSet.forEach(csObj -> {
+            if (originObjs.addObject(csObj)) {
+                diffObjs.addObject(csObj);
+            }
+        });
+        if (!diffObjs.isEmpty()) {
+            pointerFlowGraph.getSuccsOf(pointer).forEach(succ -> workList.addEntry(succ, diffObjs));
+        }
+        return diffObjs;
     }
 
     /**
@@ -163,13 +297,64 @@ class Solver {
      */
     private void processCall(CSVar recv, CSObj recvObj) {
         // TODO - finish me
+        Var recvVar = recv.getVar();
+        // 直接取当前变量所在的context作为callerContext
+        // 应当是只有在方法调用时才会创建context，所以在这里和static invoke处着重注意context的创建和分配即可
+        Context callerContext = recv.getContext();
+        recvVar.getInvokes().forEach(invoke -> {
+            InvokeExp invokeExp = invoke.getInvokeExp();
+            CSCallSite csCallSite = csManager.getCSCallSite(callerContext, invoke);
+            JMethod method = resolveCallee(recvObj, invoke);
+            Context calleeContext = contextSelector.selectContext(csCallSite, recvObj, method);
+            CSMethod csMethod = csManager.getCSMethod(calleeContext, method);
+            // 添加m_this，差点忘了
+            CSVar csThis = csManager.getCSVar(calleeContext, method.getIR().getThis());
+            workList.addEntry(csThis, PointsToSetFactory.make(recvObj));
+            // 我有时候会想set是会根据内部字段区分吗，还是地址?如果我new两个一样的对象复杂add进去会成功还是失败呢?
+            if (callGraph.addEdge(new Edge<>(getCallKind(invokeExp), csCallSite, csMethod))) {
+                // 抄的时候把这句抄漏了...
+                addReachable(csMethod);
+                for (int i = 0; i < invokeExp.getArgCount(); i++) {
+                    Var arg = invokeExp.getArg(i);
+                    Var param = method.getIR().getParam(i);
+                    CSVar csArg = csManager.getCSVar(callerContext, arg);
+                    CSVar csParam = csManager.getCSVar(calleeContext, param);
+                    addPFGEdge(csArg, csParam);
+                }
+
+                Var retVar = invoke.getResult();
+                if (retVar != null) {
+                    CSVar target = csManager.getCSVar(callerContext, retVar);
+                    method.getIR().getReturnVars().forEach(var -> {
+                        CSVar source = csManager.getCSVar(calleeContext, var);
+                        addPFGEdge(source, target);
+                    });
+                }
+            }
+        });
+    }
+
+    public static CallKind getCallKind(InvokeExp invokeExp) {
+        if (invokeExp instanceof InvokeVirtual) {
+            return CallKind.VIRTUAL;
+        } else if (invokeExp instanceof InvokeInterface) {
+            return CallKind.INTERFACE;
+        } else if (invokeExp instanceof InvokeSpecial) {
+            return CallKind.SPECIAL;
+        } else if (invokeExp instanceof InvokeStatic) {
+            return CallKind.STATIC;
+        } else if (invokeExp instanceof InvokeDynamic) {
+            return CallKind.DYNAMIC;
+        } else {
+            throw new AnalysisException("Cannot handle InvokeExp: " + invokeExp);
+        }
     }
 
     /**
      * Resolves the callee of a call site with the receiver object.
      *
-     * @param recv the receiver object of the method call. If the callSite
-     *             is static, this parameter is ignored (i.e., can be null).
+     * @param recv     the receiver object of the method call. If the callSite
+     *                 is static, this parameter is ignored (i.e., can be null).
      * @param callSite the call site to be resolved.
      * @return the resolved callee.
      */

@@ -24,11 +24,12 @@ package pascal.taie.analysis.dataflow.inter;
 
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.icfg.ICFG;
-import pascal.taie.util.collection.SetQueue;
+import pascal.taie.analysis.graph.icfg.ICFGEdge;
+import pascal.taie.util.AnalysisException;
 
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Queue;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Solver for inter-procedural data-flow analysis.
@@ -60,9 +61,46 @@ class InterSolver<Method, Node, Fact> {
 
     private void initialize() {
         // TODO - finish me
+        workList = new LinkedList<>();
+        for (Node node: icfg.getNodes()) {
+            result.setInFact(node, analysis.newInitialFact());
+            result.setOutFact(node, analysis.newInitialFact());
+        }
+        // 怎么拿到整个的入口？虽然我感觉应该第一个就是。。。
+        List<Method> entryMethod = icfg.entryMethods().toList();
+        if(entryMethod.size() != 1){
+            throw new AnalysisException("error entry method number");
+        }
+        Node entry = icfg.getEntryOf(entryMethod.get(0));
+        // 后向分析应该只需要初始化out?
+        result.setOutFact(entry, analysis.newBoundaryFact(entry));
     }
 
     private void doSolve() {
         // TODO - finish me
+        // 感觉上都是照着原来的抄就行了?
+        workList.addAll(icfg.getNodes());
+        while (!workList.isEmpty()){
+            Node node = workList.poll();
+            Fact inFact = result.getInFact(node);
+            Fact outFact = result.getOutFact(node);
+            // 先merge出当前节点的inFact
+            for (ICFGEdge<Node> edge:icfg.getInEdgesOf(node)) {
+                Node prev = edge.getSource();
+                analysis.meetInto(analysis.transferEdge(edge, result.getOutFact(prev)), inFact);
+            }
+            // transfer之后有变化
+            if(analysis.transferNode(node, inFact, outFact)){
+                // 对于get set方法而言，如果先处理get方法再处理set方法就会出问题，
+                workList.addAll(icfg.getSuccsOf(node));
+            }
+        }
+    }
+
+    public Fact getInFact(Node node){
+        return result.getInFact(node);
+    }
+    public void AddWorkList(Node node){
+        workList.add(node);
     }
 }
