@@ -43,18 +43,21 @@ public class _1CallSelector implements ContextSelector {
     @Override
     public Context selectContext(CSCallSite callSite, JMethod callee) {
         // TODO - finish me
-        return null;
+        // call-site以invoke stmt作为context
+        return ListContext.make(callSite.getCallSite());
     }
 
     @Override
     public Context selectContext(CSCallSite callSite, CSObj recv, JMethod callee) {
         // TODO - finish me
-        return null;
+        // call site忽略recv obj
+        return ListContext.make(callSite.getCallSite());
     }
 
     @Override
     public Context selectHeapContext(CSMethod method, Obj obj) {
         // TODO - finish me
-        return null;
+        // 1 call site忽略heap context
+        return getEmptyContext();
     }
 }
